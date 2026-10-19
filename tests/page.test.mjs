@@ -44,3 +44,11 @@ test('la lista de Éanna se corrige encima del marcador', () => {
   const results = html.slice(html.indexOf('id="results"'), html.indexOf('id="view-games"'));
   assert.ok(results.indexOf('id="roster"') < results.indexOf('id="editor"'));
 });
+
+test('el prompt pide JSON de texto, no archivos PNG', () => {
+  const prompt = fs.readFileSync(new URL('../prompt.js', import.meta.url), 'utf8');
+  assert.match(prompt, /You cannot attach image files/);
+  assert.match(prompt, /file = the text name/);
+  assert.match(prompt, /scoreRows/);
+  assert.doesNotMatch(prompt, /return them as "row_number.png file"/);
+});

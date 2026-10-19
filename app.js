@@ -18,7 +18,7 @@ import { initStore, listGames, saveGame, deleteGame } from './store.js';
 import { EXTRACTION_PROMPT, buildResponseSchema } from './prompt.js';
 import { renderBoxScoreCanvas, playerLabel, defaultNotes } from './render.js';
 import { firebaseConfig, appCheckSiteKey } from './firebase-config.js';
-import { lineBox, locateRunningScore, missingInkedTotals } from './sheetlines.js';
+import { chooseScoreGrid, lineBox, missingInkedTotals } from './sheetlines.js';
 import { busyNote, describeAiError, isTransient, retryMessage } from './ai-errors.js';
 
 const DEFAULT_MODEL = 'gemini-3.7-flash';
@@ -206,41 +206,47 @@ function teamTotals(team) {
 }
 
 function sheetGrid(sheet) {
-  const teams = state.extraction?.teams || [];
+  const extraction = state.extraction;
+  if (!extraction) return null;
+  const teams = extraction.teams || [];
   const parts = teams.map((team) => ({
     side: team.side === 'B' ? 'B' : 'A',
     totals: teamTotals(team),
   }));
-  const key = `${parts.map((p) => `${p.side}:${p.totals.join(',')}`).join('|')}|${sheet.width}x${sheet.height}`;
+  const marksKey = JSON.stringify({
+    runningScore: extraction.runningScore || null,
+    scoreRows: (extraction.scoreRows || []).map((r) => (
+      typeof r === 'string' ? r : [r.total, r.file, r.left, r.top, r.right, r.bottom]
+    )),
+  });
+  const key = `${parts.map((p) => `${p.side}:${p.totals.join(',')}`).join('|')}|${sheet.width}x${sheet.height}|${marksKey}`;
   if (!sheetCache || sheetCache.key !== key || sheetCache.sheet !== sheet) {
-    let grid = null;
     const ranked = [...parts].sort((a, b) => b.totals.length - a.totals.length);
+    let grid = null;
     for (const part of ranked) {
-      const hit = locateRunningScore(sheet.gray, sheet.width, sheet.height, part.totals, { side: part.side });
-      if (hit && (!grid || hit.score > grid.score)) grid = hit;
+      const hit = chooseScoreGrid(sheet.gray, sheet.width, sheet.height, part.totals, part.side, extraction);
+      if (!hit) continue;
+      if (hit.source !== 'ai') {
+        grid = hit;
+        break;
+      }
+      if (!grid) grid = hit;
     }
     if (!grid) {
       const all = ranked.flatMap((p) => p.totals);
-      grid = locateRunningScore(sheet.gray, sheet.width, sheet.height, all, { side: ranked[0]?.side || 'A' });
+      grid = chooseScoreGrid(sheet.gray, sheet.width, sheet.height, all, ranked[0]?.side || 'A', extraction);
     }
     sheetCache = { key, sheet, grid };
   }
   return sheetCache.grid;
 }
 
-function fallbackGrid(width, height) {
-  const pitch = Math.max(5, height * 0.0095);
-  const top = Math.max(2, Math.min(height * 0.30, height - pitch * 41));
-  const bw = Math.max(16, width * 0.125);
-  const x = Math.min(width - bw * 3, Math.max(0, width * 0.48));
-  return { top, pitch, x, blockWidth: bw, rows: 40, score: 0, fallback: true };
-}
-
 function runningPhoto() {
   if (state.currentId) return null;
   const sheet = state.image?.sheet;
   if (!sheet) return null;
-  const grid = sheetGrid(sheet) || fallbackGrid(sheet.width, sheet.height);
+  const grid = sheetGrid(sheet);
+  if (!grid) return null;
   const source = state.image.canvas || sheet.canvas;
   const scale = source.width / sheet.width;
   return { grid, canvas: source, scale };
@@ -367,6 +373,7 @@ async function loadDemo() {
 // ---------- Results ----------
 function setExtraction(extraction, { savedId = null } = {}) {
   state.extraction = extraction;
+  sheetCache = null;
   state.currentId = savedId;
   state.listEdits = new Map();
   const teams = extraction.teams || [];

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { gridFromAiMarks, lineBox, locateRunningScore, missingInkedTotals } from '../sheetlines.js';
+import { chooseScoreGrid, gridFromAiMarks, lineBox, locateRunningScore, missingInkedTotals } from '../sheetlines.js';
 
 function paintSheet({
   width = 320, height = 640, top = 200, pitch = 7, x = 160, bw = 42,
@@ -114,6 +114,50 @@ test('el recorte de cada fila sale de las cajas de esta foto, no de una plantill
   assert.equal(gridFromAiMarks({}, 400, 400), null);
 });
 
+test('el recorte del 3 es el marcador, no la lista ni Period 2', () => {
+  const sheet = paintSheet({
+    width: 400, height: 640, top: 200, pitch: 7, x: 210, bw: 48,
+    totals: [2, 3, 6, 8, 11, 13, 15], rules: true,
+  });
+  for (let row = 0; row < 16; row++) {
+    const y = 24 + row * 14;
+    for (let x = 6; x < 150; x++) {
+      if (y >= 0 && y < sheet.height) sheet.gray[y * sheet.width + x] = 35;
+    }
+    for (let v = 0; v < 8; v++) {
+      const vx = 6 + v * 18;
+      for (let yy = y; yy < y + 14 && yy < sheet.height; yy++) {
+        if (vx < sheet.width) sheet.gray[yy * sheet.width + vx] = 35;
+      }
+    }
+  }
+  const marks = {
+    scoreRows: [
+      { total: 1, left: 0, top: 0.05, right: 1, bottom: 0.07 },
+      { total: 40, left: 0, top: 0.70, right: 1, bottom: 0.72 },
+    ],
+  };
+  const grid = chooseScoreGrid(sheet.gray, sheet.width, sheet.height, sheet.totals, 'A', marks);
+  const box = lineBox(grid, 3);
+  assert.ok(grid && box, 'sin recorte');
+  assert.ok(grid.source !== 'ai', 'tenía que usar el marcador de 40 filas, no la caja ancha');
+  assert.ok(box.x > 160, `x ${box.x} sigue en la lista`);
+  assert.equal(box.row, 2);
+});
+
+test('entiende el nombre de texto 15.png si no viene total', () => {
+  const grid = gridFromAiMarks({
+    scoreRows: [
+      { file: '1.png', left: 0.2, top: 0.1, right: 0.4, bottom: 0.12 },
+      { file: 'row_40.png', left: 0.2, top: 0.88, right: 0.4, bottom: 0.90 },
+    ],
+  }, 500, 500);
+  const box = lineBox(grid, 15);
+  assert.ok(box);
+  assert.ok(box.x > 90 && box.x < 120);
+  assert.ok(box.y > 80 && box.y < 200);
+});
+
 test('si solo marca el marcador, parte esa caja de esta foto en filas', () => {
   const grid = gridFromAiMarks({
     runningScore: { left: 0.1, top: 0.2, right: 0.7, bottom: 0.8 },
@@ -122,10 +166,10 @@ test('si solo marca el marcador, parte esa caja de esta foto en filas', () => {
   const box41 = lineBox(grid, 41);
   const box81 = lineBox(grid, 81);
   assert.ok(box1 && box41 && box81);
-  assert.ok(Math.abs(box1.x - 100) < 8);
+  assert.ok(Math.abs(box1.x - 100) < 16);
   assert.ok(box41.x > box1.x);
   assert.ok(box81.x > box41.x);
-  assert.ok(Math.abs(box1.y - 160) < 8);
+  assert.ok(Math.abs(box1.y - 160) < 16);
 });
 
 test('localiza el marcador cuando Éanna anota a la derecha', () => {

@@ -142,8 +142,8 @@ tr.off .chip { background: #F6E3C1; }
 }
 .sheet-run .run-player:hover .run-three { border-color: #C9C3B6; }
 .sheet-run .run-player.circled .run-three { border: 2.5px solid var(--ink); }
-.rs-photo { background: #F4F1EA; padding: 1px 2px; }
-.run-photo { display: block; height: 34px; width: auto; }
+.rs-photo, .rs-photo-h { background: #F4F1EA; padding: 1px 2px; width: 168px; max-width: 220px; overflow: hidden; }
+.run-photo { display: block; height: 34px; width: auto; max-width: 220px; object-fit: contain; }
 .rs-doubt {
   text-align: left; font-size: 12px; font-weight: 500; line-height: 1.3; color: #7A4E00;
   padding: 2px 8px; max-width: 260px; border-left-width: 3px;

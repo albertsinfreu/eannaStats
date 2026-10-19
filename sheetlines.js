@@ -230,10 +230,18 @@ const INK = 76;
 function inkMean(ii, width, grid, total, side) {
   const t = parseInt(total, 10);
   if (!Number.isFinite(t) || t < 1) return 0;
-  const row = (t - 1) % grid.rows;
-  const block = Math.floor((t - 1) / grid.rows);
   const a0 = side === 'B' ? 0.66 : 0.02;
   const a1 = side === 'B' ? 0.92 : 0.34;
+  const marked = grid.rowsByTotal?.[t];
+  if (marked) {
+    return rectMean(
+      ii, width,
+      marked.y + marked.h * 0.35, marked.y + marked.h * 0.75,
+      marked.x + marked.w * a0, marked.x + marked.w * a1,
+    );
+  }
+  const row = (t - 1) % grid.rows;
+  const block = Math.floor((t - 1) / grid.rows);
   const yBase = grid.top + row * grid.pitch;
   const xBase = grid.x + block * grid.blockWidth;
   return rectMean(
@@ -267,19 +275,238 @@ export function missingInkedTotals(gray, width, height, grid, existing, side = '
   return candidates.filter((t) => inkMean(ii, width, grid, t, side) >= INK);
 }
 
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Recuadro en píxeles a partir de fracciones 0–1 (o píxeles si vienen > 1). */
+function fracRect(raw, width, height) {
+  if (!raw || typeof raw !== 'object') return null;
+  let left = num(raw.left ?? raw.x);
+  let top = num(raw.top ?? raw.y);
+  let right = num(raw.right);
+  let bottom = num(raw.bottom);
+  const wFrac = num(raw.w ?? raw.width);
+  const hFrac = num(raw.h ?? raw.height);
+  if (right == null && left != null && wFrac != null) right = left + wFrac;
+  if (bottom == null && top != null && hFrac != null) bottom = top + hFrac;
+  if (left == null || top == null || right == null || bottom == null) return null;
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  const isPx = Math.max(Math.abs(left), Math.abs(top), Math.abs(right), Math.abs(bottom)) > 2;
+  if (!isPx) {
+    left = clamp01(left);
+    top = clamp01(top);
+    right = clamp01(right);
+    bottom = clamp01(bottom);
+  }
+  const sx = isPx ? 1 : width;
+  const sy = isPx ? 1 : height;
+  const x0 = Math.min(left, right) * sx;
+  const x1 = Math.max(left, right) * sx;
+  const y0 = Math.min(top, bottom) * sy;
+  const y1 = Math.max(top, bottom) * sy;
+  const x = Math.max(0, Math.min(width, x0));
+  const y = Math.max(0, Math.min(height, y0));
+  const w = Math.max(0, Math.min(width, x1) - x);
+  const h = Math.max(0, Math.min(height, y1) - y);
+  if (w < 2 || h < 2) return null;
+  return { x, y, w, h };
+}
+
+function lerpRect(a, b, t) {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+    w: a.w + (b.w - a.w) * t,
+    h: a.h + (b.h - a.h) * t,
+  };
+}
+
+function interpolateStack(rowsByTotal, first) {
+  const known = [];
+  for (let i = 0; i < ROWS; i++) {
+    const t = first + i;
+    if (rowsByTotal[t]) known.push({ i, box: rowsByTotal[t] });
+  }
+  if (known.length < 2) return known.length;
+  for (let i = 0; i < ROWS; i++) {
+    const t = first + i;
+    if (rowsByTotal[t]) continue;
+    let prev = known[0];
+    let next = known[known.length - 1];
+    for (const k of known) {
+      if (k.i <= i) prev = k;
+      if (k.i >= i) {
+        next = k;
+        break;
+      }
+    }
+    const span = Math.max(1, next.i - prev.i);
+    rowsByTotal[t] = lerpRect(prev.box, next.box, (i - prev.i) / span);
+  }
+  return known.length;
+}
+
+function sliceRegion(region, firsts) {
+  const stacks = firsts.length;
+  const bw = region.w / stacks;
+  const pitch = region.h / ROWS;
+  const rowsByTotal = {};
+  firsts.forEach((first, b) => {
+    for (let i = 0; i < ROWS; i++) {
+      rowsByTotal[first + i] = {
+        x: region.x + b * bw,
+        y: region.y + i * pitch,
+        w: bw,
+        h: pitch,
+      };
+    }
+  });
+  return rowsByTotal;
+}
+
+/**
+ * Recuadros de esta foto: el marcador (runningScore) y cada fila numerada (scoreRows).
+ * Coordenadas en fracciones 0–1 de esta imagen, no de una plantilla de página.
+ */
+function verticalCuts(gray, width, height, box) {
+  const y0 = Math.round(box.y + box.h * 0.35);
+  const y1 = Math.round(box.y + box.h * 0.65);
+  const x0 = Math.max(0, Math.round(box.x));
+  const x1 = Math.min(width - 1, Math.round(box.x + box.w));
+  if (x1 - x0 < 8 || y1 < 1 || y0 >= height) return 0;
+  let cuts = 0;
+  for (const y of [y0, Math.round((y0 + y1) / 2), y1]) {
+    if (y < 0 || y >= height) continue;
+    let last = gray[y * width + x0] < 110;
+    for (let x = x0 + 1; x <= x1; x++) {
+      const dark = gray[y * width + x] < 110;
+      if (dark !== last) {
+        cuts += 1;
+        last = dark;
+      }
+    }
+  }
+  return cuts;
+}
+
+/** Solo alrededor de la caja ya hallada: no barrer toda la foto (la lista de jugadores también es una reja). */
+function snapToPrintedRow(gray, width, height, box, total) {
+  if (!gray || !box) return box;
+  if (box.w > width * 0.42) {
+    const aspect = box.w / Math.max(1, box.h);
+    if (aspect > 10) {
+      const n = 3;
+      const colW = box.w / n;
+      const col = Math.min(n - 1, Math.floor((total - 1) / ROWS));
+      return { x: box.x + col * colW, y: box.y, w: colW, h: box.h };
+    }
+    return box;
+  }
+  const h = Math.max(3, box.h);
+  const y = box.y;
+  const winW = Math.max(16, Math.min(box.w * 1.15, Math.max(box.h * 6, 24)));
+  const step = Math.max(2, Math.round(winW / 10));
+  const xMin = Math.max(0, Math.round(box.x - box.w * 0.25));
+  const xMax = Math.min(width - winW, Math.round(box.x + box.w * 0.25));
+  if (xMax < xMin) return box;
+  let best = { x: box.x, cuts: verticalCuts(gray, width, height, box) };
+  for (let x = xMin; x <= xMax; x += step) {
+    const cuts = verticalCuts(gray, width, height, { x, y, w: winW, h });
+    if (cuts > best.cuts) best = { x, cuts };
+  }
+  return { x: best.x, y, w: winW, h };
+}
+
+function totalFromRow(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'string' || typeof raw === 'number') {
+    const m = String(raw).match(/(\d+)/);
+    const n = m ? parseInt(m[1], 10) : NaN;
+    return Number.isFinite(n) && n >= 1 && n <= ROWS * 4 ? n : null;
+  }
+  const t = parseInt(raw.total, 10);
+  if (Number.isFinite(t) && t >= 1 && t <= ROWS * 4) return t;
+  const name = String(raw.file ?? raw.name ?? raw.png ?? '');
+  const m = name.match(/(\d+)/);
+  const n = m ? parseInt(m[1], 10) : NaN;
+  return Number.isFinite(n) && n >= 1 && n <= ROWS * 4 ? n : null;
+}
+
+export function gridFromAiMarks(marks, width, height, gray) {
+  if (!marks || width < 8 || height < 8) return null;
+  const rowsByTotal = {};
+  for (const raw of marks.scoreRows || []) {
+    const rec = typeof raw === 'string' ? { file: raw } : raw;
+    const t = totalFromRow(rec);
+    const box = fracRect(rec, width, height);
+    if (t && box) rowsByTotal[t] = box;
+  }
+  const region = fracRect(marks.runningScore, width, height);
+  for (const first of [1, 41, 81, 121]) interpolateStack(rowsByTotal, first);
+  if (Object.keys(rowsByTotal).length < 8 && region) {
+    const ratio = region.w / Math.max(1, region.h);
+    const firsts = ratio >= 0.28 ? [1, 41, 81] : [1];
+    const sliced = sliceRegion(region, firsts);
+    for (const [key, box] of Object.entries(sliced)) {
+      const t = parseInt(key, 10);
+      if (!rowsByTotal[t]) rowsByTotal[t] = box;
+    }
+  }
+  const totals = Object.keys(rowsByTotal).map((k) => parseInt(k, 10)).sort((a, b) => a - b);
+  if (!totals.length) return null;
+  const sample = rowsByTotal[totals[0]];
+  const next = rowsByTotal[totals[0] + 1];
+  const pitch = next ? (Math.abs(next.y - sample.y) || sample.h) : sample.h;
+  return {
+    top: sample.y,
+    pitch,
+    x: sample.x,
+    blockWidth: sample.w,
+    rows: ROWS,
+    score: 100,
+    source: 'ai',
+    rowsByTotal,
+  };
+}
+
+/**
+ * El recorte tiene que ser el running score (40 filas × 3 bloques), no la lista.
+ * Si la tinta de los dorsales encaja en esa plantilla, esa geometría manda.
+ */
+export function chooseScoreGrid(gray, width, height, totals, side = 'A', marks = null) {
+  const cv = locateRunningScore(gray, width, height, totals, { side });
+  if (cv) return cv;
+  return gridFromAiMarks(marks, width, height);
+}
+
 /** Recuadro, en píxeles de `gray`, de la línea real que contiene ese marcador. */
-export function lineBox(grid, total) {
+export function lineBox(grid, total, gray, width, height) {
   const t = parseInt(total, 10);
   if (!grid || !Number.isFinite(t) || t < 1) return null;
   const row = (t - 1) % grid.rows;
   const block = Math.floor((t - 1) / grid.rows);
-  const padX = grid.blockWidth * 0.2;
-  const padY = grid.pitch * 0.12;
+  let marked = grid.rowsByTotal?.[t];
+  if (!marked && !grid.rowsByTotal) {
+    marked = {
+      x: grid.x + block * grid.blockWidth,
+      y: grid.top + row * grid.pitch,
+      w: grid.blockWidth,
+      h: grid.pitch,
+    };
+  }
+  if (!marked) return null;
+  if (gray && width && height && marked.w <= width * 0.42) {
+    marked = snapToPrintedRow(gray, width, height, marked, t);
+  }
+  const padX = marked.w * 0.04;
+  const padY = marked.h * 0.06;
   return {
-    x: grid.x + block * grid.blockWidth - padX,
-    y: grid.top + row * grid.pitch - padY,
-    w: grid.blockWidth + padX * 1.35,
-    h: grid.pitch + padY * 2,
+    x: marked.x - padX,
+    y: marked.y - padY,
+    w: marked.w + padX * 2,
+    h: marked.h + padY * 2,
     row,
     block,
   };

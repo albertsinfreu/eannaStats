@@ -1,20 +1,26 @@
 export const EXTRACTION_PROMPT = `You are an expert basketball table official. The image is a photo of a handwritten paper basketball scoresheet (FIBA, FCBQ, Basketball Ireland or similar). Transcribe it faithfully into the JSON schema. Do NOT compute statistics: only read what is written.
 
 How to read the RUNNING SCORE section:
-- Each team has its own running-score column(s) with the cumulative score (1, 2, 3, ...), either preprinted or handwritten. Next to the cumulative score the scorer writes the jersey number of the player who scored.
+- The running score is a titled block on the sheet. It has 6 main columns: team A and team B, repeated three times (printed totals 1–40, 41–80, 81–120).
+- Each printed row is 4 cells in one stack: A jersey | A number | B number | B jersey. For team A the printed total is the right of those two A cells; for team B it is the left of those two B cells. The other cell in each pair is the jersey.
+- Next to the cumulative score the scorer writes the jersey number of the player who scored.
 - A field goal is usually marked by a slash or diagonal through the new score; a free throw is usually a single cumulative point (+1) with the jersey written and no slash (some sheets mark FTs with a filled dot or a parenthesis spanning several rows).
 - A three-pointer has the jersey number CIRCLED (threePointer = true).
 - The end of each period is marked by a thick circle around the score and/or a line under it; ink often changes colour between periods (red for Q1/Q3, blue or black for Q2/Q4).
 - Only cumulative scores that were actually reached are marked. Skip unmarked numbers.
 
-For every team, list EVERY scoring entry in the running score in increasing order of cumulative total: { total, jersey, threePointer, freeThrow }. 
-the scoring entry can be recognized because is titled as such in a section of the picture, it also has 6 main columns (A and B three times).
-Each row of those columns has 2 columns, of wich the right one for team A and the left one for team B is numbered from 1 to 120. In both cases the other columns are user for jersey numbers.
-cut those 4 columns in each one of the detected rows and return them as "row_number.png file"
-Do this for BOTH teams, including the away column. "total" is the team's cumulative score after that basket. 
-The first marked row is often 2, not a later number: if row 2 (or any earlier row) has a jersey written, it must be in the list. 
-Read jersey digits carefully; they must normally be one of the jersey numbers on that team's roster. 
-If a digit is ambiguous, pick the roster number that best matches the handwriting and mention the doubt in "notes". If a jersey is illegible, use "?".
+You cannot attach image files. Return JSON text only. The website will crop the photo itself.
+
+Every scoresheet photo is framed differently. On THIS image, in JSON:
+- runningScore: one rectangle around the visible running-score grid.
+- scoreRows: one object per visible printed total (include empty unmarked rows, not only rows with a jersey). Each object is:
+  { total, file, left, top, right, bottom }
+  total = the printed number (1, 2, …, 120).
+  file = the text name "<total>.png" (for example "15.png"). This is only a label, not a real file.
+  left, top, right, bottom = the 4 cells of that row (A jersey, A number, B number, B jersey) as fractions of THIS image (0 = left/top edge, 1 = right/bottom edge).
+  Totals 1, 41 and 81 are three different columns — never the same rectangle. If a stack is cropped out of the photo, omit those totals.
+
+For every team, list EVERY scoring entry in the running score in increasing order of cumulative total: { total, jersey, threePointer, freeThrow }. Do this for BOTH teams, including the away column. "total" is the team's cumulative score after that basket. The first marked row is often 2, not a later number: if row 2 (or any earlier row) has a jersey written, it must be in the list. Read jersey digits carefully; they must normally be one of the jersey numbers on that team's roster. If a digit is ambiguous, pick the roster number that best matches the handwriting and mention the doubt in "notes". If a jersey is illegible, use "?".
 
 Consecutive totals usually differ by 1, 2 or 3. A jump of 4 or more almost always means you skipped a marked row: re-check before answering.
 
@@ -60,9 +66,30 @@ export function buildResponseSchema(Schema) {
     },
     optionalProperties: ['coach', 'quarterEndTotals', 'quarterScores', 'finalScore'],
   });
+  const boxFrac = Schema.object({
+    properties: {
+      left: Schema.number({ description: 'Left edge as a fraction of this image width (0–1)' }),
+      top: Schema.number({ description: 'Top edge as a fraction of this image height (0–1)' }),
+      right: Schema.number({ description: 'Right edge as a fraction of this image width (0–1)' }),
+      bottom: Schema.number({ description: 'Bottom edge as a fraction of this image height (0–1)' }),
+    },
+  });
+  const scoreRow = Schema.object({
+    properties: {
+      total: Schema.integer({ description: 'Printed running-score number on this row (1, 2, 3, …)' }),
+      file: Schema.string({ description: 'Text label only, e.g. "15.png". Not a real image file.' }),
+      left: Schema.number({ description: 'Left edge as a fraction of this image width (0–1)' }),
+      top: Schema.number({ description: 'Top edge as a fraction of this image height (0–1)' }),
+      right: Schema.number({ description: 'Right edge as a fraction of this image width (0–1)' }),
+      bottom: Schema.number({ description: 'Bottom edge as a fraction of this image height (0–1)' }),
+    },
+    optionalProperties: ['file'],
+  });
   return Schema.object({
     properties: {
       sheetType: Schema.string(),
+      runningScore: boxFrac,
+      scoreRows: Schema.array({ items: scoreRow }),
       game: Schema.object({
         properties: {
           competition: Schema.string(),
