@@ -23,7 +23,6 @@ import { busyNote, describeAiError, isTransient, retryMessage } from './ai-error
 
 const DEFAULT_MODEL = 'gemini-3.7-flash';
 const MAX_SIDE = 1600;
-const DETECT_WIDTH = 720;
 
 const params = new URLSearchParams(location.search);
 // ?emulator usa los emuladores locales de Firebase (Auth 9099, Firestore 8080) para pruebas.
@@ -126,18 +125,36 @@ async function loadImage(file) {
     setStatus('The file is not an image.', 'error');
     return;
   }
-  const url = URL.createObjectURL(file);
-  const img = new Image();
-  img.src = url;
-  await img.decode();
-  const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+  let bitmap = null;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch {
+    bitmap = null;
+  }
+  if (!bitmap) {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    URL.revokeObjectURL(url);
+    bitmap = img;
+  }
+  const srcW = bitmap.width || bitmap.naturalWidth;
+  const srcH = bitmap.height || bitmap.naturalHeight;
+  const scale = Math.min(1, MAX_SIDE / Math.max(srcW, srcH));
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(img.naturalWidth * scale);
-  canvas.height = Math.round(img.naturalHeight * scale);
-  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  canvas.width = Math.max(1, Math.round(srcW * scale));
+  canvas.height = Math.max(1, Math.round(srcH * scale));
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  if (bitmap.close) bitmap.close();
   const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-  URL.revokeObjectURL(url);
-  state.image = { base64: dataUrl.split(',')[1], mimeType: 'image/jpeg', name: file.name, sheet: buildSheet(canvas) };
+  state.image = {
+    base64: dataUrl.split(',')[1],
+    mimeType: 'image/jpeg',
+    name: file.name,
+    canvas,
+    sheet: buildSheet(canvas),
+  };
   $('preview').src = dataUrl;
   $('preview').hidden = false;
   $('drop-empty').hidden = true;
@@ -152,9 +169,8 @@ async function loadImage(file) {
 }
 
 function buildSheet(source) {
-  const scale = Math.min(1, DETECT_WIDTH / source.width);
-  const width = Math.max(1, Math.round(source.width * scale));
-  const height = Math.max(1, Math.round(source.height * scale));
+  const width = Math.max(1, source.width);
+  const height = Math.max(1, source.height);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -185,23 +201,49 @@ function paintSheetLine(canvas, source, box) {
 
 let sheetCache = null;
 
+function teamTotals(team) {
+  return (team?.scoring || []).map((e) => parseInt(e.total, 10)).filter((t) => t > 0);
+}
+
 function sheetGrid(sheet) {
   const teams = state.extraction?.teams || [];
-  const richer = [...teams].sort((a, b) => (b.scoring?.length || 0) - (a.scoring?.length || 0))[0];
-  const side = richer?.side === 'B' ? 'B' : 'A';
-  const totals = (richer?.scoring || []).map((e) => parseInt(e.total, 10)).filter((t) => t > 0);
-  const key = `${side}|${totals.join(',')}|${sheet.width}x${sheet.height}`;
+  const parts = teams.map((team) => ({
+    side: team.side === 'B' ? 'B' : 'A',
+    totals: teamTotals(team),
+  }));
+  const key = `${parts.map((p) => `${p.side}:${p.totals.join(',')}`).join('|')}|${sheet.width}x${sheet.height}`;
   if (!sheetCache || sheetCache.key !== key || sheetCache.sheet !== sheet) {
-    sheetCache = { key, sheet, grid: locateRunningScore(sheet.gray, sheet.width, sheet.height, totals, { side }) };
+    let grid = null;
+    const ranked = [...parts].sort((a, b) => b.totals.length - a.totals.length);
+    for (const part of ranked) {
+      const hit = locateRunningScore(sheet.gray, sheet.width, sheet.height, part.totals, { side: part.side });
+      if (hit && (!grid || hit.score > grid.score)) grid = hit;
+    }
+    if (!grid) {
+      const all = ranked.flatMap((p) => p.totals);
+      grid = locateRunningScore(sheet.gray, sheet.width, sheet.height, all, { side: ranked[0]?.side || 'A' });
+    }
+    sheetCache = { key, sheet, grid };
   }
   return sheetCache.grid;
 }
 
-function runningPhoto(team) {
+function fallbackGrid(width, height) {
+  const pitch = Math.max(5, height * 0.0095);
+  const top = Math.max(2, Math.min(height * 0.30, height - pitch * 41));
+  const bw = Math.max(16, width * 0.125);
+  const x = Math.min(width - bw * 3, Math.max(0, width * 0.48));
+  return { top, pitch, x, blockWidth: bw, rows: 40, score: 0, fallback: true };
+}
+
+function runningPhoto() {
+  if (state.currentId) return null;
   const sheet = state.image?.sheet;
-  if (!sheet || state.currentId || !team?.scoring?.length) return null;
-  const grid = sheetGrid(sheet);
-  return grid ? { grid, canvas: sheet.canvas } : null;
+  if (!sheet) return null;
+  const grid = sheetGrid(sheet) || fallbackGrid(sheet.width, sheet.height);
+  const source = state.image.canvas || sheet.canvas;
+  const scale = source.width / sheet.width;
+  return { grid, canvas: source, scale };
 }
 
 // Si la lectura se salta una fila escrita (el 2, u otra), la añade para que se pueda corregir.
@@ -574,8 +616,7 @@ function renderEditor() {
     const end = boxTeam?.quarterEnds?.[play.quarter];
     return end === play.total && Number.isFinite(end) ? QUARTER_LABELS[play.quarter] : '';
   };
-  const richer = [...teams].sort((a, b) => (b.scoring?.length || 0) - (a.scoring?.length || 0))[0];
-  const photo = runningPhoto(richer);
+  const photo = runningPhoto();
   // Una sola tira: 1, 2, 3… sin saltarse filas y sin repetir A/B en horizontal.
   const placed = teams.map((team, i) => ({ team, i, box: boxes[i], plays: playByTotal[i] }));
   placed.sort((a, b) => (a.team.side === 'B') - (b.team.side === 'B'));
@@ -628,6 +669,9 @@ function renderEditor() {
       <td class="rs-doubt">${doubts.map((d) => esc(d)).join('<br>')}</td>
     </tr>`;
   }).join('');
+  if (!photo && state.image && !state.currentId) {
+    general.push('Could not line up the scoresheet photo with the printed rows.');
+  }
   const extra = general.length
     ? `<ul class="running-extra">${general.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`
     : '';
@@ -649,7 +693,11 @@ function renderEditor() {
     if (!photo) return;
     const box = lineBox(photo.grid, parseInt(row.dataset.total, 10));
     const canvas = row.querySelector('.run-photo');
-    if (canvas && box) paintSheetLine(canvas, photo.canvas, box);
+    if (!canvas || !box) return;
+    const scale = photo.scale || 1;
+    paintSheetLine(canvas, photo.canvas, scale === 1 ? box : {
+      x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale,
+    });
   });
   editor.querySelectorAll('.run-jersey').forEach((input) => {
     input.addEventListener('change', () => {

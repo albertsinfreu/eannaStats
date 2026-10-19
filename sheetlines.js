@@ -42,18 +42,28 @@ function cellDarkness(ii, width, height, top, pitch, x, bw, row, block, a0, a1) 
   return rectMean(ii, width, y0, y1, x0, x1);
 }
 
+function jerseyDarkness(ii, width, height, top, pitch, x, bw, row, block, side) {
+  if (side === 'either') {
+    const a = cellDarkness(ii, width, height, top, pitch, x, bw, row, block, 0.04, 0.36);
+    const b = cellDarkness(ii, width, height, top, pitch, x, bw, row, block, 0.62, 0.98);
+    if (a === null || b === null) return null;
+    return Math.max(a, b);
+  }
+  const a0 = side === 'B' ? 0.62 : 0.04;
+  const a1 = side === 'B' ? 0.98 : 0.36;
+  return cellDarkness(ii, width, height, top, pitch, x, bw, row, block, a0, a1);
+}
+
 // La fila anotada tiene que estar más oscura que una fila vacía del mismo bloque.
 // Así no se engancha a un bloque de texto denso (la lista de jugadores).
 function contrast(ii, width, height, marks, markSet, top, pitch, x, bw, side) {
   if (pitch < 4 || bw < 8) return -1e9;
-  const a0 = side === 'B' ? 0.62 : 0.04;
-  const a1 = side === 'B' ? 0.98 : 0.36;
   let total = 0;
   let n = 0;
   for (const t of marks) {
     const row = (t - 1) % ROWS;
     const block = Math.floor((t - 1) / ROWS);
-    const marked = cellDarkness(ii, width, height, top, pitch, x, bw, row, block, a0, a1);
+    const marked = jerseyDarkness(ii, width, height, top, pitch, x, bw, row, block, side);
     if (marked === null) return -1e9;
     let blank = null;
     for (let d = 1; d < 10 && blank === null; d++) {
@@ -61,7 +71,7 @@ function contrast(ii, width, height, marks, markSet, top, pitch, x, bw, side) {
       if (r < ROWS && !markSet.has(r + 1 + block * ROWS)) blank = r;
     }
     if (blank === null) continue;
-    const empty = cellDarkness(ii, width, height, top, pitch, x, bw, blank, block, a0, a1);
+    const empty = jerseyDarkness(ii, width, height, top, pitch, x, bw, blank, block, side);
     if (empty === null) return -1e9;
     total += marked - empty;
     n += 1;
@@ -73,14 +83,17 @@ function contrast(ii, width, height, marks, markSet, top, pitch, x, bw, side) {
 // Sirve para corregir el medio renglón que a veces se come el contraste de la tinta.
 function ruleAlign(ii, width, height, top, pitch, x, bw) {
   const x1 = x + bw * 3;
-  if (pitch < 4 || x < 0 || x1 > width) return -1e9;
+  if (pitch < 5 || bw < 8 || x < 0 || x1 > width + 2) return -1e9;
   let acc = 0;
   let n = 0;
   for (let row = 0; row <= ROWS; row++) {
     const y = top + row * pitch;
     if (y < 2 || y + pitch >= height - 2) return -1e9;
+    const mid0 = y + pitch * 0.36;
+    const mid1 = y + pitch * 0.64;
+    if (mid1 - mid0 < 2) return -1e9;
     const rule = rectMean(ii, width, y - 1, y + 1, x, x1);
-    const mid = rectMean(ii, width, y + pitch * 0.42, y + pitch * 0.58, x, x1);
+    const mid = rectMean(ii, width, mid0, mid1, x, x1);
     acc += rule - mid;
     n += 1;
   }
@@ -115,41 +128,101 @@ function bestOf(sample, pitches, tops, xs, bws) {
   return best;
 }
 
+function refine(sample, width, height, coarse, topSpan, pitchSpan) {
+  if (!coarse) return null;
+  const around = (center, span, n) => linspace(center - span, center + span, n);
+  return bestOf(
+    sample,
+    around(coarse.pitch, pitchSpan, 7),
+    around(coarse.top, topSpan, 9),
+    around(coarse.x, width * 0.03, 7),
+    around(coarse.bw, width * 0.022, 7),
+  );
+}
+
+// Acta entera (marcador a la derecha), más abajo, recorte, apaisada o el marcador en medio.
+const WINDOWS = [
+  { pitch: [0.0072, 0.0128], top: [0.28, 0.42], x: [0.42, 0.62], bw: [0.10, 0.17] },
+  { pitch: [0.0060, 0.0140], top: [0.40, 0.62], x: [0.35, 0.70], bw: [0.08, 0.20] },
+  { pitch: [0.0060, 0.0140], top: [0.12, 0.32], x: [0.25, 0.58], bw: [0.08, 0.22] },
+  { pitch: [0.0140, 0.0400], top: [0.00, 0.28], x: [0.00, 0.42], bw: [0.16, 0.42] },
+  { pitch: [0.0120, 0.0380], top: [0.00, 0.35], x: [0.35, 0.75], bw: [0.08, 0.24] },
+  { pitch: [0.0045, 0.0130], top: [0.08, 0.55], x: [0.18, 0.70], bw: [0.08, 0.26] },
+];
+
+function searchWindows(sample, width, height, minV) {
+  let best = null;
+  for (const win of WINDOWS) {
+    const coarse = bestOf(
+      sample,
+      linspace(height * win.pitch[0], height * win.pitch[1], 10),
+      linspace(height * win.top[0], height * win.top[1], 12),
+      linspace(width * win.x[0], width * win.x[1], 9),
+      linspace(width * win.bw[0], width * win.bw[1], 7),
+    );
+    const fine = refine(sample, width, height, coarse, height * 0.02, height * 0.0012);
+    const hit = fine && fine.v >= (coarse?.v || -1e9) ? fine : coarse;
+    if (!accept(sample, hit, minV)) continue;
+    if (!best || hit.v > best.v) best = hit;
+  }
+  return best;
+}
+
+function accept(sample, hit, min = 8) {
+  if (!hit || hit.v < min || hit.pitch < 4.5) return false;
+  const shifted = sample(hit.top + hit.pitch * 0.5, hit.pitch, hit.x, hit.bw);
+  return hit.v >= shifted + 2.5;
+}
+
+function locateAnywhere(sample, width, height, minV) {
+  const pitchMin = Math.max(5, height / 90);
+  const pitchMax = Math.max(pitchMin + 0.5, height / 42);
+  const coarse = bestOf(
+    sample,
+    linspace(pitchMin, pitchMax, 14),
+    linspace(1, Math.max(2, height * 0.58), 16),
+    linspace(0, width * 0.74, 14),
+    linspace(Math.max(8, width * 0.07), width * 0.34, 10),
+  );
+  const fine = refine(sample, width, height, coarse, height * 0.03, (pitchMax - pitchMin) * 0.08);
+  const hit = fine && fine.v >= (coarse?.v || -1e9) ? fine : coarse;
+  return accept(sample, hit, minV) ? hit : null;
+}
+
+function pack(hit, ii, width, height, sample) {
+  const snapped = snapToRules(ii, width, height, hit.top, hit.pitch, hit.x, hit.bw);
+  if (snapped && sample(snapped.top, snapped.pitch, hit.x, hit.bw) > hit.v * 0.55) {
+    hit = { ...hit, top: snapped.top, pitch: snapped.pitch };
+  }
+  return { top: hit.top, pitch: hit.pitch, x: hit.x, blockWidth: hit.bw, rows: ROWS, score: hit.v };
+}
+
 /**
  * gray: luminancia 0–255, fila a fila.
  * totals: marcadores acumulados que tienen tinta (el dorsal escrito).
  * Devuelve el recuadro de cada fila, o null si la foto no encaja con esta plantilla.
  */
 export function locateRunningScore(gray, width, height, totals, { side = 'A' } = {}) {
-  const marks = [...new Set(totals.map((t) => parseInt(t, 10)).filter((t) => t > 0 && t <= ROWS * 4))];
-  if (marks.length < 6 || width < 40 || height < 80) return null;
+  if (width < 40 || height < 80) return null;
+  const marks = [...new Set((totals || []).map((t) => parseInt(t, 10)).filter((t) => t > 0 && t <= ROWS * 4))];
   const ii = integral(gray, width, height);
   const markSet = new Set(marks);
-  const sample = (top, pitch, x, bw) => contrast(ii, width, height, marks, markSet, top, pitch, x, bw, side);
+  const sides = side === 'B' ? ['B', 'either', 'A'] : ['A', 'either', 'B'];
 
-  const coarse = bestOf(
-    sample,
-    linspace(height * 0.0072, height * 0.0128, 10),
-    linspace(height * 0.28, height * 0.42, 14),
-    linspace(width * 0.42, width * 0.62, 9),
-    linspace(width * 0.10, width * 0.17, 7),
-  );
-  const around = (center, span, n) => linspace(center - span, center + span, n);
-  const fine = bestOf(
-    sample,
-    around(coarse.pitch, height * 0.0009, 7),
-    around(coarse.top, height * 0.015, 9),
-    around(coarse.x, width * 0.025, 7),
-    around(coarse.bw, width * 0.018, 7),
-  );
-  const shifted = sample(fine.top + fine.pitch * 0.5, fine.pitch, fine.x, fine.bw);
-  if (fine.v < 8 || fine.v < shifted + 4) return null;
-  const snapped = snapToRules(ii, width, height, fine.top, fine.pitch, fine.x, fine.bw);
-  if (snapped && sample(snapped.top, snapped.pitch, fine.x, fine.bw) > fine.v * 0.55) {
-    fine.top = snapped.top;
-    fine.pitch = snapped.pitch;
+  if (marks.length >= 3) {
+    for (const inkSide of sides) {
+      const sample = (top, pitch, x, bw) => contrast(ii, width, height, marks, markSet, top, pitch, x, bw, inkSide);
+      const hit = searchWindows(sample, width, height, 3.5)
+        || (width >= 260 && height >= 340 ? locateAnywhere(sample, width, height, 3.5) : null);
+      if (hit) return pack(hit, ii, width, height, sample);
+    }
   }
-  return { top: fine.top, pitch: fine.pitch, x: fine.x, blockWidth: fine.bw, rows: ROWS, score: fine.v };
+
+  const byRule = (top, pitch, x, bw) => ruleAlign(ii, width, height, top, pitch, x, bw);
+  const ruled = searchWindows(byRule, width, height, 14)
+    || (width >= 260 && height >= 340 ? locateAnywhere(byRule, width, height, 14) : null);
+  if (ruled) return pack(ruled, ii, width, height, byRule);
+  return null;
 }
 
 const INK = 76;
