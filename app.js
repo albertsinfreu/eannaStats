@@ -18,7 +18,7 @@ import { initStore, listGames, saveGame, deleteGame } from './store.js';
 import { EXTRACTION_PROMPT, buildResponseSchema } from './prompt.js';
 import { renderBoxScoreCanvas, playerLabel, defaultNotes } from './render.js';
 import { firebaseConfig, appCheckSiteKey } from './firebase-config.js';
-import { chooseScoreGrid, lineBox, missingInkedTotals } from './sheetlines.js';
+import { chooseScoreGrid, geminiMarkBoxes, lineBox, missingInkedTotals } from './sheetlines.js';
 import { busyNote, describeAiError, isTransient, retryMessage } from './ai-errors.js';
 
 const DEFAULT_MODEL = 'gemini-3.7-flash';
@@ -156,10 +156,11 @@ async function loadImage(file) {
     sheet: buildSheet(canvas),
   };
   $('preview').src = dataUrl;
-  $('preview').hidden = false;
+  $('photo-stage').hidden = false;
   $('drop-empty').hidden = true;
   $('drop').classList.add('has-file');
   $('drop').title = 'Change photo';
+  $('preview').onload = () => paintGeminiBoxes();
   setStatus('');
   updateAnalyzeButton();
   if (state.extraction && !state.currentId) {
@@ -402,7 +403,54 @@ function recompute() {
   const extraction = roster.source ? state.extraction : applyRoster(state.extraction, roster);
   state.box = computeBoxScore(extraction);
   renderResults();
+  paintGeminiBoxes();
 }
+
+function paintGeminiBoxes() {
+  const canvas = $('gemini-boxes');
+  const img = $('preview');
+  const stage = $('photo-stage');
+  if (!canvas || !img || !stage || stage.hidden) return;
+  const srcW = img.naturalWidth || state.image?.canvas?.width || 0;
+  const srcH = img.naturalHeight || state.image?.canvas?.height || 0;
+  const marks = (!state.currentId && state.extraction) ? geminiMarkBoxes(state.extraction, srcW, srcH) : [];
+  if (!marks.length || !srcW || !srcH) {
+    canvas.hidden = true;
+    return;
+  }
+  const dispW = img.clientWidth;
+  const dispH = img.clientHeight;
+  if (dispW < 8 || dispH < 8) {
+    canvas.hidden = true;
+    return;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  canvas.hidden = false;
+  canvas.width = Math.max(1, Math.round(dispW * dpr));
+  canvas.height = Math.max(1, Math.round(dispH * dpr));
+  canvas.style.width = `${dispW}px`;
+  canvas.style.height = `${dispH}px`;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, dispW, dispH);
+  const sx = dispW / srcW;
+  const sy = dispH / srcH;
+  for (const mark of marks) {
+    const x = mark.x * sx;
+    const y = mark.y * sy;
+    const w = mark.w * sx;
+    const h = mark.h * sy;
+    ctx.strokeStyle = mark.kind === 'region' ? '#E8A317' : '#0E7A46';
+    ctx.lineWidth = mark.kind === 'region' ? 3 : 1.25;
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, w), Math.max(1, h));
+    if (mark.kind === 'row' && Number.isFinite(mark.total) && h >= 7) {
+      ctx.font = '600 9px Inter, sans-serif';
+      ctx.fillStyle = '#0E7A46';
+      ctx.fillText(String(mark.total), x + 2, y + Math.min(h - 1, 10));
+    }
+  }
+}
+window.addEventListener('resize', () => paintGeminiBoxes());
 
 function publicExtraction(game) {
   if (!game?.extraction) return null;

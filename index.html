@@ -51,7 +51,10 @@
           <strong>Drop the image here or click to choose it</strong>
           <span>JPG, PNG or WebP. On a phone you can take the photo directly.</span>
         </span>
-        <img id="preview" alt="Uploaded scoresheet" hidden>
+        <span class="photo-stage" id="photo-stage" hidden>
+          <img id="preview" alt="Uploaded scoresheet">
+          <canvas id="gemini-boxes" hidden></canvas>
+        </span>
       </label>
 
       <details class="advanced">
@@ -171,6 +174,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=20261019g"></script>
+  <script type="module" src="app.js?v=20261019h"></script>
 </body>
 </html>

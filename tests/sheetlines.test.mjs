@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chooseScoreGrid, gridFromAiMarks, lineBox, locateRunningScore, missingInkedTotals } from '../sheetlines.js';
+import { chooseScoreGrid, geminiMarkBoxes, gridFromAiMarks, lineBox, locateRunningScore, missingInkedTotals } from '../sheetlines.js';
 
 function paintSheet({
   width = 320, height = 640, top = 200, pitch = 7, x = 160, bw = 42,
@@ -80,6 +80,24 @@ test('localiza el marcador en una foto apaisada con el bloque a la derecha', () 
   assert.ok(grid, 'no localizó la foto apaisada');
   assert.ok(grid.x > sheet.width * 0.4, `x ${grid.x}`);
   assert.ok(Math.abs(grid.pitch - sheet.pitch) < 1.6, `pitch ${grid.pitch}`);
+});
+
+test('las coordenadas del JSON de Gemini se leen en píxeles de esa foto', () => {
+  const marks = geminiMarkBoxes({
+    runningScore: { left: 0.5, top: 0.2, right: 0.9, bottom: 0.8 },
+    scoreRows: [
+      { total: 3, file: '3.png', left: 0.5, top: 0.2, right: 0.64, bottom: 0.22 },
+    ],
+  }, 1000, 500);
+  assert.equal(marks[0].kind, 'region');
+  assert.equal(marks[0].x, 500);
+  assert.equal(marks[0].y, 100);
+  assert.equal(marks[0].w, 400);
+  assert.equal(marks[0].h, 300);
+  assert.equal(marks[1].kind, 'row');
+  assert.equal(marks[1].total, 3);
+  assert.equal(marks[1].x, 500);
+  assert.equal(marks[1].h, 10);
 });
 
 test('el recorte de cada fila sale de las cajas de esta foto, no de una plantilla', () => {

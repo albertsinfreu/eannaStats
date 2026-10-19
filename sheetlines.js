@@ -281,7 +281,7 @@ function num(v) {
 }
 
 /** Recuadro en píxeles a partir de fracciones 0–1 (o píxeles si vienen > 1). */
-function fracRect(raw, width, height) {
+export function fracRect(raw, width, height) {
   if (!raw || typeof raw !== 'object') return null;
   let left = num(raw.left ?? raw.x);
   let top = num(raw.top ?? raw.y);
@@ -469,6 +469,26 @@ export function gridFromAiMarks(marks, width, height, gray) {
     source: 'ai',
     rowsByTotal,
   };
+}
+
+/** Cajas que Gemini puso en el JSON, en píxeles de la foto enviada. */
+export function geminiMarkBoxes(extraction, width, height) {
+  const out = [];
+  const region = fracRect(extraction?.runningScore, width, height);
+  if (region) out.push({ kind: 'region', ...region });
+  for (const raw of extraction?.scoreRows || []) {
+    const rec = typeof raw === 'string' ? { file: raw } : raw;
+    const box = fracRect(rec, width, height);
+    if (!box) continue;
+    const t = parseInt(rec?.total, 10);
+    const fromFile = String(rec?.file || rec || '').match(/(\d+)/);
+    out.push({
+      kind: 'row',
+      total: Number.isFinite(t) ? t : (fromFile ? parseInt(fromFile[1], 10) : null),
+      ...box,
+    });
+  }
+  return out;
 }
 
 /**

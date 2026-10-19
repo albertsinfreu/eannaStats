@@ -7,6 +7,7 @@ const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 test('la foto va dentro del recuadro y solo hay el botón de analizar', () => {
   const drop = html.slice(html.indexOf('id="drop"'), html.indexOf('</label>'));
   assert.match(drop, /id="preview"/);
+  assert.match(drop, /id="gemini-boxes"/);
   assert.doesNotMatch(html, /id="preview-wrap"/);
   assert.match(html, />Analyze scoresheet</);
   assert.doesNotMatch(html, /btn-demo|Probar con un ejemplo|Analizar con IA/);
