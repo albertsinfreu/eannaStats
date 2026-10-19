@@ -28,6 +28,8 @@ Also read, for BOTH teams and with the same care for the away team as for the ho
 - Team names (A = home/left, B = away/right), coaches, date, time, venue, competition.
 - Roster: every row of the player list (Name of Players and Kit No.), for both teams. Read the handwritten name and the kit number exactly as written; do not invent, translate or complete a name. Kit numbers stay with the same player all season. Also read personal fouls: count one foul per occupied foul box (a "P2" written in one box is a single foul, not two). Players with no marks get 0. "played" is true if the player-in / entered boxes are marked (X, tick or slash) or the player scored or fouled; false if those boxes are empty.
 - Do not leave the away team's players, fouls or running score empty when they are written on the sheet.
+- If a personal-foul mark is ambiguous (smudged, a "P2", or you are unsure how many boxes are filled), say so in "notes" and include that player's jersey number.
+- playerRows: one rectangle per roster row you read, for both teams. The box covers that player's kit number, handwritten name and personal-foul boxes. Each object is { side, number, left, top, right, bottom }. side is "A" or "B". number is the kit number as written. left, top, right, bottom are fractions of THIS image (0 = left/top edge, 1 = right/bottom edge).
 - quarterEndTotals: each team's cumulative score at the end of Q1, Q2, Q3 and Q4 (from the circled end-of-period scores). Add overtime ends if present.
 - quarterScores: points scored IN each period if the sheet has a summary box with them (e.g. "Scores Period 1 A 36 B 13"). Leave empty if not written.
 - finalScore of each team.
@@ -74,6 +76,17 @@ export function buildResponseSchema(Schema) {
       bottom: Schema.number({ description: 'Bottom edge as a fraction of this image height (0–1)' }),
     },
   });
+  const playerRow = Schema.object({
+    properties: {
+      side: Schema.enumString({ enum: ['A', 'B'], description: 'Team column of this roster row' }),
+      number: Schema.string({ description: 'Kit number written on this roster row' }),
+      left: Schema.number({ description: 'Left edge as a fraction of this image width (0–1)' }),
+      top: Schema.number({ description: 'Top edge as a fraction of this image height (0–1)' }),
+      right: Schema.number({ description: 'Right edge as a fraction of this image width (0–1)' }),
+      bottom: Schema.number({ description: 'Bottom edge as a fraction of this image height (0–1)' }),
+    },
+    optionalProperties: ['number'],
+  });
   const scoreRow = Schema.object({
     properties: {
       total: Schema.integer({ description: 'Printed running-score number on this row (1, 2, 3, …)' }),
@@ -90,6 +103,7 @@ export function buildResponseSchema(Schema) {
       sheetType: Schema.string(),
       runningScore: boxFrac,
       scoreRows: Schema.array({ items: scoreRow }),
+      playerRows: Schema.array({ items: playerRow }),
       game: Schema.object({
         properties: {
           competition: Schema.string(),

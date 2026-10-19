@@ -37,6 +37,17 @@ test('el marcador leído es una columna de running score', () => {
   assert.doesNotMatch(html, /id="warnings"/);
 });
 
+test('las dudas se revisan en una tabla con la foto al lado', () => {
+  assert.match(html, /id="review"/);
+  assert.match(html, /Each doubt is one row/);
+  assert.match(html, /correct by hand/);
+  assert.doesNotMatch(html, /id="warnings"/);
+  const prompt = fs.readFileSync(new URL('../prompt.js', import.meta.url), 'utf8');
+  assert.match(prompt, /playerRows/);
+  const results = html.slice(html.indexOf('id="results"'), html.indexOf('id="view-games"'));
+  assert.ok(results.indexOf('id="review"') < results.indexOf('id="roster"'));
+});
+
 test('la lista de Éanna se corrige encima del marcador', () => {
   assert.match(html, /Éanna players/);
   assert.match(html, /id="roster"/);

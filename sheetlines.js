@@ -492,13 +492,74 @@ export function geminiMarkBoxes(extraction, width, height) {
 }
 
 /**
- * El recorte tiene que ser el running score (40 filas × 3 bloques), no la lista.
- * Si la tinta de los dorsales encaja en esa plantilla, esa geometría manda.
+ * Las cajas verdes son una fila del marcador cuando son estrechas y bajas.
+ * Una banda de todo el ancho de la foto incluye la lista: esa no vale.
+ */
+function scoreRowsAreLineBoxes(marks, width, height) {
+  const boxes = [];
+  for (const raw of marks?.scoreRows || []) {
+    const rec = typeof raw === 'string' ? { file: raw } : raw;
+    const box = fracRect(rec, width, height);
+    if (box) boxes.push(box);
+  }
+  if (boxes.length < 2) return false;
+  // Una fila del marcador puede cubrir las tres columnas (como el recuadro amarillo).
+  // Solo se descarta la banda de toda la foto, que se come la lista de jugadores.
+  const line = boxes.filter((b) => b.w <= width * 0.8 && b.h <= height * 0.12);
+  return line.length >= 2 && line.length / boxes.length >= 0.75;
+}
+
+/** La misma caja verde que se dibuja para ese número. Null si no hay o si ocupa toda la foto. */
+export function markedRowBox(marks, width, height, total) {
+  const t = parseInt(total, 10);
+  if (!Number.isFinite(t) || t < 1) return null;
+  const grid = gridFromAiMarks(marks, width, height);
+  const box = grid?.rowsByTotal?.[t];
+  if (!box || box.w > width * 0.8 || box.h > height * 0.12) return null;
+  const padX = box.w * 0.03;
+  const padY = Math.max(1, box.h * 0.12);
+  return {
+    x: box.x - padX,
+    y: box.y - padY,
+    w: box.w + padX * 2,
+    h: box.h + padY * 2,
+  };
+}
+
+/**
+ * Si Gemini marcó cada fila del marcador, el recorte es esa caja (la verde).
+ * Una caja de ancho de página no es una fila: entonces manda la plantilla de 40,
+ * que no se queda en la lista de jugadores.
  */
 export function chooseScoreGrid(gray, width, height, totals, side = 'A', marks = null) {
+  const ai = gridFromAiMarks(marks, width, height, gray);
+  if (ai && scoreRowsAreLineBoxes(marks, width, height)) return ai;
   const cv = locateRunningScore(gray, width, height, totals, { side });
   if (cv) return cv;
-  return gridFromAiMarks(marks, width, height);
+  return ai;
+}
+
+function kitKey(value) {
+  if (value === null || value === undefined) return '';
+  const s = String(value).trim().replace(/^#/, '');
+  if (!s) return '';
+  if (/^0+$/.test(s)) return s.length > 1 ? '00' : '0';
+  return s.replace(/^0+(?=\d)/, '');
+}
+
+/** Recuadro, en píxeles de la foto, de la fila de lista (dorsal, nombre y faltas). */
+export function playerRowBox(marks, width, height, { side = 'A', number = '' } = {}) {
+  const wantSide = side === 'B' ? 'B' : 'A';
+  const wantNum = kitKey(number);
+  for (const raw of marks?.playerRows || []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const rowSide = raw.side === 'B' ? 'B' : 'A';
+    if (rowSide !== wantSide) continue;
+    if (wantNum && kitKey(raw.number) !== wantNum) continue;
+    const box = fracRect(raw, width, height);
+    if (box) return box;
+  }
+  return null;
 }
 
 /** Recuadro, en píxeles de `gray`, de la línea real que contiene ese marcador. */
@@ -517,7 +578,7 @@ export function lineBox(grid, total, gray, width, height) {
     };
   }
   if (!marked) return null;
-  if (gray && width && height && marked.w <= width * 0.42) {
+  if (gray && width && height && grid.source !== 'ai' && marked.w <= width * 0.42) {
     marked = snapToPrintedRow(gray, width, height, marked, t);
   }
   const padX = marked.w * 0.04;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chooseScoreGrid, geminiMarkBoxes, gridFromAiMarks, lineBox, locateRunningScore, missingInkedTotals } from '../sheetlines.js';
+import { chooseScoreGrid, geminiMarkBoxes, gridFromAiMarks, lineBox, locateRunningScore, markedRowBox, missingInkedTotals, playerRowBox } from '../sheetlines.js';
 
 function paintSheet({
   width = 320, height = 640, top = 200, pitch = 7, x = 160, bw = 42,
@@ -163,6 +163,45 @@ test('el recorte del 3 es el marcador, no la lista ni Period 2', () => {
   assert.equal(box.row, 2);
 });
 
+test('las cajas verdes estrechas mandan sobre la reja de la izquierda', () => {
+  const sheet = paintSheet({
+    width: 400, height: 640, top: 80, pitch: 10, x: 16, bw: 46,
+    totals: [2, 3, 6, 8, 11, 13, 15], rules: true,
+  });
+  const marks = {
+    runningScore: { left: 0.60, top: 0.18, right: 0.96, bottom: 0.86 },
+    scoreRows: [
+      { total: 1, left: 0.62, top: 0.18, right: 0.78, bottom: 0.198 },
+      { total: 40, left: 0.62, top: 0.84, right: 0.78, bottom: 0.858 },
+    ],
+  };
+  const grid = chooseScoreGrid(sheet.gray, sheet.width, sheet.height, sheet.totals, 'A', marks);
+  const box = lineBox(grid, 3, sheet.gray, sheet.width, sheet.height);
+  assert.equal(grid.source, 'ai');
+  assert.ok(box.x > 220, `x ${box.x} se fue a la lista`);
+  assert.ok(box.y > 100 && box.y < 220, `y ${box.y}`);
+});
+
+test('el recorte de una fila ancha del marcador es la caja verde, no toda la foto', () => {
+  const marks = {
+    scoreRows: [
+      { total: 2, left: 0.42, top: 0.30, right: 0.96, bottom: 0.322 },
+      { total: 3, left: 0.42, top: 0.322, right: 0.96, bottom: 0.344 },
+    ],
+  };
+  const row = markedRowBox(marks, 1000, 1400, 2);
+  const page = markedRowBox({
+    scoreRows: [
+      { total: 1, left: 0, top: 0.05, right: 1, bottom: 0.07 },
+      { total: 40, left: 0, top: 0.70, right: 1, bottom: 0.72 },
+    ],
+  }, 1000, 1400, 3);
+  assert.ok(row);
+  assert.ok(row.x > 400 && row.x < 460, `x ${row.x}`);
+  assert.ok(row.w > 500, `w ${row.w}`);
+  assert.equal(page, null);
+});
+
 test('entiende el nombre de texto 15.png si no viene total', () => {
   const grid = gridFromAiMarks({
     scoreRows: [
@@ -201,4 +240,21 @@ test('localiza el marcador cuando Éanna anota a la derecha', () => {
   const box = lineBox(grid, 11);
   assert.equal(box.row, 10);
   assert.equal(box.block, 0);
+});
+
+test('la fila de un jugador es la caja de su dorsal, no la del otro equipo', () => {
+  const marks = {
+    playerRows: [
+      { side: 'A', number: '6', left: 0.05, top: 0.20, right: 0.40, bottom: 0.24 },
+      { side: 'B', number: '6', left: 0.55, top: 0.20, right: 0.90, bottom: 0.24 },
+      { side: 'A', number: '11', left: 0.05, top: 0.30, right: 0.40, bottom: 0.34 },
+    ],
+  };
+  const a = playerRowBox(marks, 1000, 800, { side: 'A', number: '6' });
+  const b = playerRowBox(marks, 1000, 800, { side: 'B', number: '06' });
+  const missing = playerRowBox(marks, 1000, 800, { side: 'A', number: '99' });
+  assert.ok(a && b);
+  assert.ok(a.x < 100);
+  assert.ok(b.x > 500);
+  assert.equal(missing, null);
 });

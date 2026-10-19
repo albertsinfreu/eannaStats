@@ -18,7 +18,7 @@ import { initStore, listGames, saveGame, deleteGame } from './store.js';
 import { EXTRACTION_PROMPT, buildResponseSchema } from './prompt.js';
 import { renderBoxScoreCanvas, playerLabel, defaultNotes } from './render.js';
 import { firebaseConfig, appCheckSiteKey } from './firebase-config.js';
-import { chooseScoreGrid, geminiMarkBoxes, lineBox, missingInkedTotals } from './sheetlines.js';
+import { chooseScoreGrid, fracRect, geminiMarkBoxes, lineBox, markedRowBox, missingInkedTotals, playerRowBox } from './sheetlines.js?v=20261019k';
 import { busyNote, describeAiError, isTransient, retryMessage } from './ai-errors.js';
 
 const DEFAULT_MODEL = 'gemini-3.7-flash';
@@ -532,6 +532,7 @@ function renderResults() {
   $('game-score').textContent = scoreLine(box);
   $('table-wrap').innerHTML = boxTableHtml(box, state.teamIndex);
   renderRoster();
+  renderReview();
   renderEditor();
 }
 
@@ -641,8 +642,7 @@ function ensureScoring(team, total) {
   return entry;
 }
 
-function renderEditor() {
-  const teams = state.extraction?.teams || [];
+function playMaps() {
   const boxes = state.box?.teams || [];
   const playByTotal = boxes.map((boxTeam) => {
     const map = new Map();
@@ -657,21 +657,255 @@ function renderEditor() {
   const leftoverNotes = [];
   const allPlays = playByTotal.flatMap((map) => [...map.values()]);
   for (const note of notes) {
+    if (/foul/i.test(note)) continue;
     const hit = allPlays.find((p) => mentionsToken(note, p.total) || (p.jersey && p.jersey !== '?' && mentionsToken(note, p.jersey)));
     if (hit) hit.doubts.push(`AI: ${note}`);
     else leftoverNotes.push(`AI: ${note}`);
   }
   const used = new Set(allPlays.flatMap((p) => p.doubts));
   const general = [
-    ...boxes.flatMap((boxTeam) => (boxTeam?.warnings || []).filter((w) => !used.has(w))),
-    ...leftoverNotes,
+    ...boxes.flatMap((boxTeam, teamIndex) => (boxTeam?.warnings || [])
+      .filter((w) => !used.has(w))
+      .map((text) => ({ teamIndex, text }))),
+    ...leftoverNotes.map((text) => ({ teamIndex: 0, text })),
   ];
+  return { playByTotal, general };
+}
+
+function sheetPixels(box) {
+  const photo = runningPhoto();
+  if (!photo || !box) return null;
+  const scale = photo.scale || 1;
+  return {
+    canvas: photo.canvas,
+    box: scale === 1 ? box : {
+      x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale,
+    },
+  };
+}
+
+function shotForTotal(total) {
+  const sheet = state.image?.sheet;
+  const source = state.image?.canvas || sheet?.canvas;
+  if (!sheet || !source) return null;
+  const scale = source.width / sheet.width;
+  const fit = (box) => (box ? {
+    canvas: source,
+    box: scale === 1 ? box : {
+      x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale,
+    },
+  } : null);
+  const marked = state.extraction && markedRowBox(state.extraction, sheet.width, sheet.height, total);
+  if (marked) return fit(marked);
+  const photo = runningPhoto();
+  if (!photo) return null;
+  return fit(lineBox(photo.grid, total));
+}
+
+function scoreCrop(total) {
+  return shotForTotal(total);
+}
+
+function playerCrop(side, number) {
+  const sheet = state.image?.sheet;
+  if (!sheet || !state.extraction) return null;
+  return sheetPixels(playerRowBox(state.extraction, sheet.width, sheet.height, { side, number }));
+}
+
+function regionCrop() {
+  const sheet = state.image?.sheet;
+  if (!sheet || !state.extraction) return null;
+  return sheetPixels(fracRect(state.extraction.runningScore, sheet.width, sheet.height));
+}
+
+function cropForText(text) {
+  const final = String(text).match(/final score read is (\d+)/);
+  if (final) return scoreCrop(+final[1]) || regionCrop();
+  const running = String(text).match(/Running total (\d+)/);
+  if (running) return scoreCrop(+running[1]);
+  const jump = String(text).match(/to (\d+)/);
+  if (jump) return scoreCrop(+jump[1]);
+  return regionCrop();
+}
+
+function renderReview() {
+  const host = $('review');
+  if (!host) return;
+  const teams = state.extraction?.teams || [];
+  const { playByTotal, general } = playMaps();
+  const shots = [];
+  const remember = (shot) => {
+    shots.push(shot);
+    return shots.length - 1;
+  };
+  const photoCell = (shot) => `<td class="rs-photo">${shot ? `<canvas class="review-photo" data-shot="${remember(shot)}" aria-label="Photo of this doubt"></canvas>` : ''}</td>`;
+  const scoreRows = [];
+  teams.forEach((team, teamIndex) => {
+    const plays = playByTotal[teamIndex];
+    if (!plays) return;
+    const side = team.side === 'B' ? 'B' : 'A';
+    const name = team.name || `Team ${side}`;
+    for (const [total, play] of [...plays.entries()].sort((a, b) => a[0] - b[0])) {
+      if (!play.doubts?.length) continue;
+      const entry = findScoring(team, total)?.entry;
+      scoreRows.push(`<tr>
+        ${photoCell(scoreCrop(total))}
+        <td class="rs-doubt">${play.doubts.map((d) => esc(`${side} ${total}: ${d}`)).join('<br>')}</td>
+        <td class="rs-fix">
+          <div class="review-fields">
+            <label>${esc(name)} ${total}
+              <span class="run-player${entry?.threePointer ? ' circled' : ''}">
+                <input type="text" class="run-jersey" data-team="${teamIndex}" data-total="${total}" value="${esc(entry?.jersey || '')}" aria-label="Jersey ${side} ${total}" inputmode="numeric">
+                <button type="button" class="run-three" data-team="${teamIndex}" data-total="${total}" aria-pressed="${entry?.threePointer ? 'true' : 'false'}" aria-label="Circled jersey: three" title="Circled jersey: three"></button>
+              </span>
+            </label>
+          </div>
+        </td>
+      </tr>`);
+    }
+  });
+  const eanna = eannaSide(state.extraction);
+  const ctx = eanna ? rosterContext(state.games, state.extraction, state.currentId) : null;
+  const list = ctx && !ctx.source ? withListEdits(ctx, state.listEdits) : null;
+  const eannaRows = eanna ? rosterRows(eanna.players, list ? list.players : (ctx?.players || [])) : [];
+  const playerItems = [];
+  teams.forEach((team, teamIndex) => {
+    const side = team.side === 'B' ? 'B' : 'A';
+    const isEanna = team === eanna;
+    (team.players || []).forEach((player, i) => {
+      const row = isEanna ? eannaRows[i] : null;
+      const doubts = row ? [...row.doubts] : [];
+      if (!isEanna) {
+        if (!jerseyKey(player.number)) doubts.push('No jersey number.');
+        if (!String(player.name || '').trim()) doubts.push('Name not read.');
+      }
+      playerItems.push({ teamIndex, i, side, player, doubts, teamName: team.name || `Team ${side}` });
+    });
+  });
+  const foulNotes = (state.extraction?.notes || []).filter((note) => /foul/i.test(note));
+  const looseFouls = [];
+  for (const note of foulNotes) {
+    const hit = playerItems.find((item) => {
+      const num = jerseyKey(item.player.number);
+      return num && mentionsToken(note, num);
+    });
+    if (hit) hit.doubts.push(`AI: ${note}`);
+    else looseFouls.push(`AI: ${note}`);
+  }
+  const playerRows = playerItems.filter((item) => item.doubts.length).map((item) => {
+    const { player, i, teamIndex, side } = item;
+    return `<tr>
+      ${photoCell(playerCrop(side, player.number))}
+      <td class="rs-doubt">${item.doubts.map((d) => esc(`${side} #${player.number || '?'}: ${d}`)).join('<br>')}</td>
+      <td class="rs-fix">
+        <div class="review-fields">
+          <label>Jersey
+            <input type="text" class="review-jersey" data-team="${teamIndex}" data-i="${i}" data-jersey="${esc(jerseyKey(player.number))}" value="${esc(player.number || '')}" inputmode="numeric">
+          </label>
+          <label>Name
+            <input type="text" class="review-name" data-team="${teamIndex}" data-i="${i}" value="${esc(player.name || '')}">
+          </label>
+          <label>Fouls
+            <input type="text" class="review-fouls" data-team="${teamIndex}" data-i="${i}" value="${esc(player.fouls ?? '')}" inputmode="numeric">
+          </label>
+        </div>
+      </td>
+    </tr>`;
+  });
+  const otherRows = [...general.map((item) => item.text), ...looseFouls].map((text) => `<tr>
+    ${photoCell(cropForText(text))}
+    <td class="rs-doubt">${esc(text)}</td>
+    <td class="rs-fix"></td>
+  </tr>`);
+  const body = [...scoreRows, ...playerRows, ...otherRows].join('');
+  host.innerHTML = body
+    ? `<div class="review"><table class="sheet-review">
+        <thead><tr><th>Photo</th><th class="left">Doubt</th><th class="left">Correct</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table></div>`
+    : '<p class="muted small">No doubts on this scoresheet.</p>';
+  host.querySelectorAll('.review-photo').forEach((canvas) => {
+    const shot = shots[+canvas.dataset.shot];
+    if (shot) paintSheetLine(canvas, shot.canvas, shot.box);
+  });
+  host.querySelectorAll('.run-jersey').forEach((input) => {
+    input.addEventListener('change', () => {
+      const team = teams[+input.dataset.team];
+      const total = parseInt(input.dataset.total, 10);
+      if (!team || !Number.isFinite(total)) return;
+      const value = input.value.trim();
+      const found = findScoring(team, total);
+      if (!value) {
+        if (found) team.scoring.splice(found.index, 1);
+      } else if (found) found.entry.jersey = value;
+      else ensureScoring(team, total).jersey = value;
+      syncJson();
+    });
+  });
+  host.querySelectorAll('.run-three').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const team = teams[+btn.dataset.team];
+      const total = parseInt(btn.dataset.total, 10);
+      if (!team || !Number.isFinite(total)) return;
+      const entry = ensureScoring(team, total);
+      const jersey = host.querySelector(`.run-jersey[data-team="${btn.dataset.team}"][data-total="${total}"]`);
+      if (!entry.jersey && jersey) entry.jersey = jersey.value.trim();
+      entry.threePointer = !entry.threePointer;
+      syncJson();
+    });
+  });
+  host.querySelectorAll('.review-jersey').forEach((input) => {
+    input.addEventListener('change', () => {
+      const team = teams[+input.dataset.team];
+      const player = team?.players?.[+input.dataset.i];
+      if (!player) return;
+      const prev = jerseyKey(input.dataset.jersey);
+      const next = jerseyKey(input.value);
+      if (team === eanna && prev && next && prev !== next && state.listEdits.has(prev)) {
+        state.listEdits.set(next, state.listEdits.get(prev));
+        state.listEdits.delete(prev);
+      }
+      player.number = input.value.trim();
+      syncJson();
+    });
+  });
+  host.querySelectorAll('.review-name').forEach((input) => {
+    input.addEventListener('change', () => {
+      const player = teams[+input.dataset.team]?.players?.[+input.dataset.i];
+      if (!player) return;
+      player.name = input.value.trim();
+      syncJson();
+    });
+  });
+  host.querySelectorAll('.review-fouls').forEach((input) => {
+    input.addEventListener('change', () => {
+      const player = teams[+input.dataset.team]?.players?.[+input.dataset.i];
+      if (!player) return;
+      const n = parseInt(input.value, 10);
+      player.fouls = Number.isFinite(n) ? Math.max(0, Math.min(5, n)) : 0;
+      syncJson();
+    });
+  });
+}
+
+function renderEditor() {
+  const teams = state.extraction?.teams || [];
+  const boxes = state.box?.teams || [];
+  const { playByTotal, general: generalItems } = playMaps();
+  const general = generalItems.map((item) => item.text);
   const quarterMark = (play, boxTeam) => {
     if (!play || play.kind === 'SKIP' || play.quarter == null) return '';
     const end = boxTeam?.quarterEnds?.[play.quarter];
     return end === play.total && Number.isFinite(end) ? QUARTER_LABELS[play.quarter] : '';
   };
   const photo = runningPhoto();
+  const sheetForRows = state.image?.sheet;
+  const markedSample = sheetForRows && state.extraction
+    ? (markedRowBox(state.extraction, sheetForRows.width, sheetForRows.height, 1)
+      || markedRowBox(state.extraction, sheetForRows.width, sheetForRows.height, 2)
+      || markedRowBox(state.extraction, sheetForRows.width, sheetForRows.height, 41))
+    : null;
+  const showPhoto = !!(photo || markedSample);
   // Una sola tira: 1, 2, 3… sin saltarse filas y sin repetir A/B en horizontal.
   const placed = teams.map((team, i) => ({ team, i, box: boxes[i], plays: playByTotal[i] }));
   placed.sort((a, b) => (a.team.side === 'B') - (b.team.side === 'B'));
@@ -684,7 +918,7 @@ function renderEditor() {
   ), 0);
   const lastTotal = Math.min(160, Math.max(120, Math.ceil(maxTotal / 40) * 40));
   const editor = $('editor');
-  editor.classList.toggle('has-photo', !!photo);
+  editor.classList.toggle('has-photo', showPhoto);
   const jerseyCell = (slot, total) => {
     if (!slot) return '<td class="rs-jersey"></td>';
     const { team, i, plays, box } = slot;
@@ -719,12 +953,12 @@ function renderEditor() {
     });
     const block = total > 1 && (total - 1) % 40 === 0 ? ' class="block"' : '';
     return `<tr data-total="${total}"${block}>
-      ${photo ? `<td class="rs-photo"><canvas class="run-photo" aria-label="Scoresheet line for running total ${total}"></canvas></td>` : ''}
+      ${showPhoto ? `<td class="rs-photo"><canvas class="run-photo" aria-label="Scoresheet line for running total ${total}"></canvas></td>` : ''}
       ${jerseyCell(teamA, total)}${numCell(teamA, total, false)}${numCell(teamB, total, true)}${jerseyCell(teamB, total)}
       <td class="rs-doubt">${doubts.map((d) => esc(d)).join('<br>')}</td>
     </tr>`;
   }).join('');
-  if (!photo && state.image && !state.currentId) {
+  if (!showPhoto && state.image && !state.currentId) {
     general.push('Could not line up the scoresheet photo with the printed rows.');
   }
   const extra = general.length
@@ -735,7 +969,7 @@ function renderEditor() {
     <table class="sheet-run">
       <caption>Running score${title ? ` · ${esc(title)}` : ''}</caption>
       <thead><tr>
-        ${photo ? '<th class="rs-photo-h"></th>' : ''}
+        ${showPhoto ? '<th class="rs-photo-h"></th>' : ''}
         <th class="rs-side" colspan="2" title="${esc(aName)}">A</th>
         <th class="rs-side split" colspan="2" title="${esc(bName)}">B</th>
         <th class="rs-doubt-h">Doubt</th>
@@ -745,14 +979,10 @@ function renderEditor() {
     ${extra}`;
 
   editor.querySelectorAll('tr[data-total]').forEach((row) => {
-    if (!photo) return;
-    const box = lineBox(photo.grid, parseInt(row.dataset.total, 10));
+    const shot = shotForTotal(parseInt(row.dataset.total, 10));
     const canvas = row.querySelector('.run-photo');
-    if (!canvas || !box) return;
-    const scale = photo.scale || 1;
-    paintSheetLine(canvas, photo.canvas, scale === 1 ? box : {
-      x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale,
-    });
+    if (!canvas || !shot) return;
+    paintSheetLine(canvas, shot.canvas, shot.box);
   });
   editor.querySelectorAll('.run-jersey').forEach((input) => {
     input.addEventListener('change', () => {
