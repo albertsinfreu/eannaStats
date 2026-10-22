@@ -9,7 +9,7 @@ import {
   getAI, getGenerativeModel, GoogleAIBackend, Schema, ThinkingLevel,
 } from 'https://www.gstatic.com/firebasejs/13.0.0/firebase-ai.js';
 import {
-  computeBoxScore, aggregateTeam, teamKey, teamMatches, findEannaKey, opponentLine, isEannaName, QUARTER_LABELS,
+  computeBoxScore, aggregateTeam, teamKey, teamMatches, findEannaKey, opponentLine, isEannaName, sideLabel, QUARTER_LABELS,
 } from './boxscore.js';
 import {
   absentFromSheet, applyRoster, jerseyKey, rosterContext, rosterFromGames, rosterRows, withListEdits,
@@ -476,7 +476,8 @@ function againstFoot(box, teamIndex = state.teamIndex) {
 function gameSubtitle(box, teamIndex = state.teamIndex) {
   const g = box.game || {};
   const other = box.teams.find((_, i) => i !== teamIndex);
-  return [g.competition, g.venue, other?.name ? `vs ${other.name}` : '', g.date]
+  const side = sideLabel({ game: g, teams: box.teams }, box.teams[teamIndex]?.name);
+  return [side, g.competition, g.venue, other?.name ? `vs ${other.name}` : '', g.date]
     .filter(Boolean).join(' · ');
 }
 
@@ -1402,6 +1403,7 @@ function renderGamesList(agg) {
     return `
       <tr class="clickable" data-id="${esc(m.id)}">
         <td>${esc(m.dateLabel || '—')}</td>
+        <td>${esc(m.side || '—')}</td>
         <td>${esc(m.opponent || '—')}</td>
         <td>${resultBadge(m)} <b>${m.pointsFor}</b> – ${m.pointsAgainst ?? '—'}</td>
         <td>${esc(m.competition)}</td>
@@ -1412,7 +1414,7 @@ function renderGamesList(agg) {
   const actionHead = manageable ? '<th></th>' : '';
   $('games-list').innerHTML = `
     <table class="list">
-      <thead><tr><th>Date</th><th>Opponent</th><th>Result</th><th>Competition</th><th>Top scorer</th>${actionHead}</tr></thead>
+      <thead><tr><th>Date</th><th>Team</th><th>Opponent</th><th>Result</th><th>Competition</th><th>Top scorer</th>${actionHead}</tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
   $('games-list').querySelectorAll('tr[data-id]').forEach((tr) => tr.addEventListener('click', () => showGame(tr.dataset.id)));
@@ -1449,6 +1451,7 @@ function renderGamesTable(agg) {
   const rows = agg.matches.map((m) => `
     <tr>
       <td>${esc(m.dateLabel || '—')}</td>
+      <td>${esc(m.side || '—')}</td>
       <td class="name">${esc(m.opponent || '—')}</td>
       ${pairCells(m.pointsFor, m.pointsAgainst, 'pts')}
       ${pairCells(m.foulsFor, m.against?.fouls)}
@@ -1464,6 +1467,7 @@ function renderGamesTable(agg) {
       <thead>
         <tr>
           <th class="left" rowspan="2">Date</th>
+          <th class="left" rowspan="2">Team</th>
           <th class="left" rowspan="2">Opponent</th>
           <th colspan="2">Points</th>
           <th colspan="2">Fouls</th>
@@ -1476,7 +1480,7 @@ function renderGamesTable(agg) {
       </thead>
       <tbody>${rows}</tbody>
       <tfoot><tr>
-        <td></td><td>TOTAL</td>
+        <td></td><td></td><td>TOTAL</td>
         ${pairCells(sumKnown(agg.matches.map((m) => m.pointsFor)), sumKnown(agg.matches.map((m) => m.pointsAgainst)))}
         ${pairCells(sumKnown(agg.matches.map((m) => m.foulsFor)), sumKnown(agg.matches.map((m) => m.against?.fouls)))}
         ${[0, 1, 2, 3].map((i) => pairCells(quartersFor[i], quartersAgainst[i])).join('')}

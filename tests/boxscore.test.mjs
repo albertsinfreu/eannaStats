@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  computeBoxScore, computeTeamBoxScore, aggregateTeam, listTeams, teamKey, isEannaName, findEannaKey, opponentLine, parseGameDate,
+  computeBoxScore, computeTeamBoxScore, aggregateTeam, listTeams, teamKey, isEannaName, findEannaKey, opponentLine, parseGameDate, sideLabel,
 } from '../boxscore.js';
 
 const fixture = JSON.parse(readFileSync(new URL('../fixtures/eanna-drogheda.json', import.meta.url), 'utf8'));
@@ -277,6 +277,31 @@ test('un segundo partido con otra grafía de Éanna entra en el listado y el acu
   const onlyPlain = aggregateTeam([{ id: 'plain', extraction: plain }], findEannaKey([{ extraction: plain }]));
   assert.deepEqual(onlyPlain.matches.map((m) => m.id), ['plain']);
   assert.equal(findEannaKey([{ extraction: plain }]), 'eanna');
+});
+
+test('el partido se etiqueta U16 o U17', () => {
+  assert.equal(sideLabel({ game: { competition: 'U 16 (1) LEAGUE' }, teams: [{ name: 'EANNA BC' }] }), 'U16');
+  assert.equal(sideLabel({ game: { competition: 'DMB4S U17(1)' }, teams: [{ name: 'Templeogue' }, { name: 'Eanna' }] }), 'U17');
+  assert.equal(sideLabel({
+    game: { competition: 'FRIENDLY' },
+    teams: [{ name: 'EANNA U16 (A)' }, { name: 'EANNA U17 (B)' }],
+  }, 'EANNA U16 (A)'), 'U16');
+  assert.equal(sideLabel({
+    game: { competition: 'FRIENDLY' },
+    teams: [{ name: 'EANNA U16 (A)' }, { name: 'EANNA U17 (B)' }],
+  }, 'EANNA U17 (B)'), 'U17');
+  const u16 = {
+    id: 'u16',
+    extraction: {
+      game: { competition: 'U 16 (1) LEAGUE' },
+      teams: [
+        { name: 'TEMPLEOGUE 416', scoring: [], finalScore: 42 },
+        { name: 'EANNA BC', scoring: [], finalScore: 83 },
+      ],
+    },
+  };
+  const agg = aggregateTeam([u16], findEannaKey([u16]));
+  assert.equal(agg.matches[0].side, 'U16');
 });
 
 test('entiende formatos de fecha habituales', () => {

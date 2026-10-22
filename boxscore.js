@@ -285,6 +285,25 @@ function sumFavor(matches, field) {
  * Éanna, con cualquier grafía del acta: «Éanna BC», «EANNA», «EannaBC» o «Coláiste Éanna».
  * El nombre ya llega normalizado (sin acentos, en minúsculas).
  */
+/** U16 o U17 a partir del acta (equipo Éanna, competición o rival). */
+export function sideLabel(extraction, eannaTeamName = '') {
+  const texts = [
+    extraction?.game?.side,
+    extraction?.game?.ageGroup,
+    extraction?.game?.team,
+    eannaTeamName,
+    ...(extraction?.teams || []).filter((t) => isEannaName(t.name)).map((t) => t.name),
+    extraction?.game?.competition,
+    ...(extraction?.teams || []).map((t) => t.name),
+  ];
+  for (const text of texts) {
+    const s = String(text || '');
+    if (/\bu[\s-]*16\b/i.test(s)) return 'U16';
+    if (/\bu[\s-]*17\b/i.test(s)) return 'U17';
+  }
+  return '';
+}
+
 export function isEannaName(name) {
   const k = teamKey(name);
   if (!k) return false;
@@ -344,6 +363,7 @@ export function aggregateTeam(games, key) {
       id: g.id,
       date,
       dateLabel: box.game?.date || '',
+      side: sideLabel(g.extraction, team.name),
       competition: box.game?.competition || '',
       opponent: opp?.name || '',
       teamIndex: idx,

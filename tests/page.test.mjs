@@ -30,6 +30,12 @@ test('subir y borrar actas queda tras el login; partidos y acumulado se ven sin 
   assert.match(totals, /Éanna · season/);
 });
 
+test('la lista de partidos muestra el equipo U16 o U17', () => {
+  const app = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.match(app, /<th>Date<\/th><th>Team<\/th><th>Opponent<\/th>/);
+  assert.match(app, /m\.side/);
+});
+
 test('el marcador leído es una columna de running score', () => {
   assert.match(html, /Running score/);
   assert.match(html, /id="editor" class="running"/);
